@@ -15,6 +15,13 @@ class Settings(BaseSettings):
     DB_USER: str = "checkout_user"
     DB_PASSWORD: str = ""
 
+    # Full connection string (Neon/Render convention). If set it wins over
+    # DB_HOST/DB_PORT/... above — DATABASE_URL/DATABASE_URL_SYNC normalize
+    # its scheme to the right async/sync driver for whichever dialect it
+    # declares, and translate Neon's sslmode= for asyncpg (see below).
+    # e.g. postgres://user:pass@ep-xxx.neon.tech/neondb?sslmode=require
+    DB_URL: str = ""
+
     # App
     SECRET_KEY: str = "changeme"
     ENVIRONMENT: str = "production"
@@ -305,12 +312,22 @@ class Settings(BaseSettings):
         # DB_URL, if set, is a full connection string (Render/Neon convention)
         # — normalize its scheme to the async driver for whichever dialect
         # it declares, rather than assuming one.
-        url = (getattr(self, "DB_URL", "") or "").strip()
+        url = (self.DB_URL or "").strip()
         if url:
             if url.startswith("postgres://"):
                 url = url.replace("postgres://", "postgresql://", 1)
             if url.startswith("postgresql://"):
-                return url.replace("postgresql://", "postgresql+asyncpg://", 1)
+                url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
+                # asyncpg's connect() takes `ssl`, not libpq's `sslmode` —
+                # and SQLAlchemy passes URL query params straight through
+                # as connect kwargs, so Neon's default `?sslmode=require`
+                # would crash the engine at startup ("connect() got an
+                # unexpected keyword argument 'sslmode'"). Translate it;
+                # psycopg2 (the sync driver, below) understands sslmode
+                # natively, so it needs no translation.
+                if "sslmode=" in url:
+                    url = url.replace("sslmode=", "ssl=")
+                return url
             if url.startswith("mysql://"):
                 return url.replace("mysql://", "mysql+aiomysql://", 1)
             return url
@@ -321,7 +338,7 @@ class Settings(BaseSettings):
     @property
     def DATABASE_URL_SYNC(self) -> str:
         # Sync driver — used by Alembic/any blocking tooling, not the app itself.
-        url = (getattr(self, "DB_URL", "") or "").strip()
+        url = (self.DB_URL or "").strip()
         if url:
             if url.startswith("postgres://"):
                 url = url.replace("postgres://", "postgresql://", 1)

@@ -1,33 +1,27 @@
 # Render Blueprint — standby deployment of checkout-server.
 #
 # Purpose: an independent copy of this app, usable if the VPS goes down.
-# Uses Render's native managed Postgres (Render has no managed MySQL/
-# MariaDB product) — the app supports both dialects via DB_DIALECT in
-# config.py; the VPS/staging keep running MySQL unchanged, only this
-# deployment sets DB_DIALECT=postgres.
 #
-# This is its OWN database, separate from the VPS's — see RENDER_DEPLOY.md
-# for exactly what that means and how to keep them in sync.
+# Database: Neon Postgres — NOT a Render-managed database. This deployment
+# connects to the same Neon project the VPS's sync writes into, so the
+# standby starts with the real synced data already in place. The connection
+# is a single DB_URL env var (a full connection string, pasted in manually
+# on both checkout-web and checkout-worker — it's a secret, so it's never
+# committed to this file). config.py normalizes its scheme and translates
+# Neon's `?sslmode=require` into asyncpg's `ssl=` automatically.
 #
 # Deploy: connect this repo in the Render dashboard → "New +" → "Blueprint".
 # Render reads this file automatically. A few envVars marked `sync: false`
-# below need real values pasted in manually after the first deploy (secrets
-# are deliberately never written into this file, since it's committed to
-# git) — see RENDER_DEPLOY.md for the exact list.
-
-databases:
-  - name: checkout-db
-    databaseName: checkout_db
-    user: checkout_user
-    plan: basic-256mb   # smallest paid Postgres plan (Render retired the free/"starter" tier)
-    diskSizeGB: 5
+# below need real values pasted in during the first deploy (secrets are
+# deliberately never written into this file, since it's committed to git) —
+# see RENDER_DEPLOY.md for the exact list.
 
 services:
   # ─── Redis — Celery broker/result-backend + rate-limit cache ─────────────
-  # Not the source of truth for anything (Postgres is) — losing this data on
-  # a restart just means in-flight background tasks and rate-limit counters
-  # reset, not real data loss. ipAllowList: [] = no public access, internal
-  # Render network only.
+  # Not the source of truth for anything (Neon Postgres is) — losing this
+  # data on a restart just means in-flight background tasks and rate-limit
+  # counters reset, not real data loss. ipAllowList: [] = no public access,
+  # internal Render network only.
   - name: checkout-redis
     type: keyvalue
     plan: starter
@@ -47,18 +41,13 @@ services:
         generateValue: true
       - key: PYTHON_VERSION
         value: 3.12.10
-      - key: DB_DIALECT
-        value: postgres
-      - key: DB_HOST
-        fromDatabase: { name: checkout-db, property: host }
-      - key: DB_PORT
-        fromDatabase: { name: checkout-db, property: port }
-      - key: DB_NAME
-        fromDatabase: { name: checkout-db, property: database }
-      - key: DB_USER
-        fromDatabase: { name: checkout-db, property: user }
-      - key: DB_PASSWORD
-        fromDatabase: { name: checkout-db, property: password }
+      # Neon connection string — the same Neon DB the VPS sync writes into.
+      # Use Neon's DIRECT (non `-pooler`) string: asyncpg's prepared
+      # statements don't survive Neon's PgBouncer transaction pooling.
+      # The trailing ?sslmode=require can stay — config.py translates it
+      # for asyncpg.
+      - key: DB_URL
+        sync: false
       - key: REDIS_URL
         fromService:
           name: checkout-redis
@@ -106,18 +95,9 @@ services:
         generateValue: true
       - key: PYTHON_VERSION
         value: 3.12.10
-      - key: DB_DIALECT
-        value: postgres
-      - key: DB_HOST
-        fromDatabase: { name: checkout-db, property: host }
-      - key: DB_PORT
-        fromDatabase: { name: checkout-db, property: port }
-      - key: DB_NAME
-        fromDatabase: { name: checkout-db, property: database }
-      - key: DB_USER
-        fromDatabase: { name: checkout-db, property: user }
-      - key: DB_PASSWORD
-        fromDatabase: { name: checkout-db, property: password }
+      # Same DB_URL as checkout-web — the same Neon database.
+      - key: DB_URL
+        sync: false
       - key: REDIS_URL
         fromService:
           name: checkout-redis
